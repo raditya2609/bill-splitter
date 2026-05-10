@@ -25,6 +25,7 @@
   function normalizeSession(session) {
     return {
       ...session,
+      receiptImageId: typeof session.receiptImageId === "string" ? session.receiptImageId : null,
       people: Array.isArray(session.people) ? session.people.map(normalizePerson) : [],
     };
   }
@@ -76,8 +77,12 @@
 
   function deleteSession(id) {
     const state = loadState();
+    const session = state.sessions.find((entry) => entry.id === id);
     state.sessions = state.sessions.filter((session) => session.id !== id);
     saveState(state);
+    if (session?.receiptImageId && window.BillImageStore?.deleteImage) {
+      window.BillImageStore.deleteImage(session.receiptImageId).catch(() => {});
+    }
   }
 
   function saveSettings(settings) {

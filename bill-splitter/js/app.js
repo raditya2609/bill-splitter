@@ -3,6 +3,7 @@ const { formatDate, formatIDR, formatNumber, normalizePhone, parseIDR, todayISO 
 const { deleteSession, getSession, loadState, saveSettings, saveState, upsertSession } = window.BillStorage;
 const { buildPersonWhatsappUrl, shareSessionResult } = window.BillShare;
 const { parseReceiptText, recognizeImage } = window.BillOcr;
+const { clearAllImages, compressImage, getImageStorageBytes, getImageURL, initImageStore, saveImage, deleteImage: deleteStoredImage } = window.BillImageStore;
 
 const app = document.querySelector("#app");
 let draft = null;
@@ -11,6 +12,9 @@ let deferredInstallPrompt = null;
 let homeFilter = "all";
 let ocrState = createOcrState();
 let ocrRunId = 0;
+let imageStoreAvailable = false;
+let imageUsageLabel = "Menghitung...";
+let receiptViewer = createReceiptViewerState();
 
 function createOcrState() {
   return {
@@ -24,6 +28,16 @@ function createOcrState() {
     error: "",
     progress: 0,
     progressLabel: "",
+    savePhoto: false,
+  };
+}
+
+function createReceiptViewerState() {
+  return {
+    isOpen: false,
+    sessionId: "",
+    imageUrl: "",
+    error: "",
   };
 }
 
@@ -177,6 +191,7 @@ function createBlankDraft(settings) {
     taxPct: settings.defaultTaxPct,
     servicePct: settings.defaultServicePct,
     notes: "",
+    receiptImageId: null,
   };
 }
 
@@ -434,6 +449,16 @@ function renderOcrReview() {
         <button type="button" class="primary-btn" data-action="ocr-apply" ${itemCandidates.length ? "" : "disabled"}>Tambahkan ke split</button>
         <button type="button" class="secondary-btn" data-action="ocr-cancel">Batal</button>
       </div>
+      ${
+        imageStoreAvailable
+          ? `
+            <label class="save-receipt-toggle">
+              <input type="checkbox" data-action="ocr-save-photo" ${ocrState.savePhoto ? "checked" : ""}>
+              <span>Simpan foto struk untuk catatan</span>
+            </label>
+          `
+          : ""
+      }
     </div>
   `;
 }
@@ -635,15 +660,48 @@ function renderSessionDetail(sessionId) {
         <div class="grand"><span>Grand Total</span><strong>${formatIDR(calc.grandTotalRounded)}</strong></div>
       </section>
 
+      ${renderReceiptActions(session)}
+
       <div class="action-row">
         <button class="primary-btn" data-action="share-session" data-session-id="${session.id}">Bagikan ke WhatsApp</button>
         <a class="secondary-btn" href="#session/${session.id}/edit">Edit</a>
         <button class="secondary-btn danger-text" data-action="delete-session" data-session-id="${session.id}">Hapus</button>
       </div>
+      ${renderReceiptViewer()}
       <p class="toast" data-toast hidden></p>
     `,
     { back: true },
   );
+}
+
+function renderReceiptActions(session) {
+  if (!imageStoreAvailable) return "";
+
+  return `
+    <section class="receipt-actions">
+      ${
+        session.receiptImageId
+          ? `<button type="button" class="secondary-btn wide" data-action="view-receipt" data-session-id="${session.id}">🧾 Lihat foto struk</button>`
+          : `<button type="button" class="secondary-btn wide" data-action="attach-receipt" data-session-id="${session.id}">📎 Lampirkan foto struk</button>`
+      }
+      <input class="file-input" type="file" accept="image/*" capture="environment" data-attach-receipt-file data-session-id="${session.id}">
+    </section>
+  `;
+}
+
+function renderReceiptViewer() {
+  if (!receiptViewer.isOpen) return "";
+
+  return `
+    <section class="sheet-backdrop" role="dialog" aria-modal="true" aria-label="Foto struk">
+      <div class="receipt-viewer">
+        <button type="button" class="icon-btn receipt-close" data-action="close-receipt-viewer" aria-label="Tutup">×</button>
+        ${receiptViewer.error ? `<div class="error-box"><p>${escapeHtml(receiptViewer.error)}</p></div>` : ""}
+        ${receiptViewer.imageUrl ? `<img src="${escapeHtml(receiptViewer.imageUrl)}" alt="Foto struk tersimpan">` : ""}
+        <button type="button" class="secondary-btn danger-text" data-action="delete-receipt-photo" data-session-id="${receiptViewer.sessionId}">Hapus foto</button>
+      </div>
+    </section>
+  `;
 }
 
 function getPaymentSummary(session, calculation) {
@@ -738,19 +796,33 @@ function renderSettings() {
 
         <section class="section-block">
           <h2>Backup Data</h2>
-          <p class="hint">Export membuat file JSON dari semua split di perangkat ini. Import akan mengganti data lokal dengan isi file backup.</p>
+          <p class="hint">Export membuat file JSON dari semua split di perangkat ini. Foto struk tidak ikut diekspor karena ukuran file.</p>
           <div class="utility-grid">
             <button class="secondary-btn" type="button" data-action="export-json">Export JSON</button>
             <button class="secondary-btn" type="button" data-action="choose-import">Import JSON</button>
           </div>
           <input class="file-input" type="file" accept="application/json,.json" data-import-file>
         </section>
+        ${renderImageSettingsSection()}
         ${installSection}
       </form>
       <p class="toast" data-toast hidden></p>
     `,
     { back: true },
   );
+  refreshImageUsage();
+}
+
+function renderImageSettingsSection() {
+  if (!imageStoreAvailable) return "";
+
+  return `
+    <section class="section-block">
+      <h2>Foto struk</h2>
+      <p class="hint" data-image-usage>Total ruang dipakai: ${escapeHtml(imageUsageLabel)}</p>
+      <button class="secondary-btn danger-text" type="button" data-action="clear-receipt-images">Hapus semua foto struk</button>
+    </section>
+  `;
 }
 
 function renderNotFound() {
@@ -774,6 +846,21 @@ function showToast(message) {
   setTimeout(() => {
     toast.hidden = true;
   }, 2600);
+}
+
+function formatBytes(bytes) {
+  return `${((Number(bytes) || 0) / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function refreshImageUsage() {
+  if (!imageStoreAvailable || routeParts()[0] !== "settings") return;
+  try {
+    imageUsageLabel = formatBytes(await getImageStorageBytes());
+  } catch (error) {
+    imageUsageLabel = "0.0 MB";
+  }
+  const target = app.querySelector("[data-image-usage]");
+  if (target) target.textContent = `Total ruang dipakai: ${imageUsageLabel}`;
 }
 
 async function withBusyButton(button, label, task) {
@@ -806,7 +893,7 @@ function exportJson(button) {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    showToast("Backup JSON siap diunduh.");
+    showToast("Backup JSON siap diunduh. Foto struk tidak ikut diekspor karena ukuran file.");
   });
 }
 
@@ -837,6 +924,23 @@ async function importJson(file) {
     setTimeout(() => renderSettings(), 650);
   } catch (error) {
     showToast(error.message || "Gagal membaca file backup.");
+  }
+}
+
+async function clearReceiptImages() {
+  if (!imageStoreAvailable) return;
+  if (!confirm("Hapus semua foto struk dari perangkat ini?")) return;
+
+  try {
+    await clearAllImages();
+    const state = loadState();
+    state.sessions = state.sessions.map((session) => ({ ...session, receiptImageId: null }));
+    saveState(state);
+    imageUsageLabel = "0.0 MB";
+    renderSettings();
+    showToast("Semua foto struk dihapus.");
+  } catch (error) {
+    showToast("Foto struk tidak bisa dihapus.");
   }
 }
 
@@ -877,6 +981,77 @@ async function pickContact(personId) {
   } catch (error) {
     // User cancellation and picker failures are intentionally silent.
   }
+}
+
+function pickReceiptAttachment(sessionId) {
+  Array.from(app.querySelectorAll("[data-attach-receipt-file]"))
+    .find((input) => input.dataset.sessionId === sessionId)
+    ?.click();
+}
+
+async function attachReceiptFile(sessionId, file) {
+  if (!imageStoreAvailable || !file) return;
+  try {
+    const blob = await compressImage(file);
+    const imageId = await saveImage(blob);
+    const session = getSession(sessionId);
+    if (!session) return;
+    if (session.receiptImageId) {
+      deleteStoredImage(session.receiptImageId).catch(() => {});
+    }
+    session.receiptImageId = imageId;
+    upsertSession(session);
+    renderSessionDetail(sessionId);
+  } catch (error) {
+    showToast(error.message || "Foto tidak bisa diproses. Coba foto lain.");
+  }
+}
+
+async function openReceiptViewer(sessionId) {
+  if (!imageStoreAvailable) return;
+  const session = getSession(sessionId);
+  if (!session?.receiptImageId) return;
+
+  if (receiptViewer.imageUrl) URL.revokeObjectURL(receiptViewer.imageUrl);
+  try {
+    const imageUrl = await getImageURL(session.receiptImageId);
+    receiptViewer = {
+      isOpen: true,
+      sessionId,
+      imageUrl: imageUrl || "",
+      error: imageUrl ? "" : "Foto struk tidak ditemukan.",
+    };
+    renderSessionDetail(sessionId);
+  } catch (error) {
+    receiptViewer = {
+      isOpen: true,
+      sessionId,
+      imageUrl: "",
+      error: "Foto struk tidak bisa dibuka.",
+    };
+    renderSessionDetail(sessionId);
+  }
+}
+
+function closeReceiptViewer() {
+  const sessionId = receiptViewer.sessionId;
+  if (receiptViewer.imageUrl) URL.revokeObjectURL(receiptViewer.imageUrl);
+  receiptViewer = createReceiptViewerState();
+  if (sessionId) renderSessionDetail(sessionId);
+}
+
+function deleteReceiptPhoto(sessionId) {
+  const session = getSession(sessionId);
+  if (!session?.receiptImageId) return;
+  if (!confirm("Hapus foto struk dari sesi ini?")) return;
+
+  const imageId = session.receiptImageId;
+  session.receiptImageId = null;
+  upsertSession(session);
+  deleteStoredImage(imageId).catch(() => {});
+  if (receiptViewer.imageUrl) URL.revokeObjectURL(receiptViewer.imageUrl);
+  receiptViewer = createReceiptViewerState();
+  renderSessionDetail(sessionId);
 }
 
 function renderCurrentForm() {
@@ -971,6 +1146,7 @@ async function processOcrImage() {
       ...createOcrState(),
       isOpen: true,
       step: "review",
+      file,
       rawText,
       candidates: parsed.candidates,
       warning: parsed.warning,
@@ -1000,9 +1176,20 @@ function deleteOcrRow(candidateId) {
   renderCurrentForm();
 }
 
-function applyOcrRows() {
+async function applyOcrRows() {
   if (!draft) return;
   syncOcrCandidatesFromSheet();
+
+  if (ocrState.savePhoto && ocrState.file && imageStoreAvailable) {
+    try {
+      const blob = await compressImage(ocrState.file);
+      draft.receiptImageId = await saveImage(blob);
+    } catch (error) {
+      ocrState.error = error.message || "Foto tidak bisa diproses. Coba foto lain.";
+      renderCurrentForm();
+      return;
+    }
+  }
 
   ocrState.candidates.forEach((candidate) => {
     if (candidate.type === "item") {
@@ -1097,7 +1284,7 @@ app.addEventListener("click", async (event) => {
   }
 
   if (action === "ocr-apply") {
-    applyOcrRows();
+    await applyOcrRows();
   }
 
   if (action === "toggle-person") {
@@ -1133,12 +1320,32 @@ app.addEventListener("click", async (event) => {
     openPersonWhatsapp(target.dataset.sessionId, target.dataset.personId);
   }
 
+  if (action === "attach-receipt") {
+    pickReceiptAttachment(target.dataset.sessionId);
+  }
+
+  if (action === "view-receipt") {
+    await openReceiptViewer(target.dataset.sessionId);
+  }
+
+  if (action === "close-receipt-viewer") {
+    closeReceiptViewer();
+  }
+
+  if (action === "delete-receipt-photo") {
+    deleteReceiptPhoto(target.dataset.sessionId);
+  }
+
   if (action === "export-json") {
     exportJson(target);
   }
 
   if (action === "choose-import") {
     chooseImportFile();
+  }
+
+  if (action === "clear-receipt-images") {
+    await clearReceiptImages();
   }
 
   if (action === "install-app" && deferredInstallPrompt) {
@@ -1198,12 +1405,21 @@ app.addEventListener("change", (event) => {
     event.target.value = "";
   }
 
+  if (event.target.matches("[data-action='ocr-save-photo']")) {
+    ocrState.savePhoto = event.target.checked;
+  }
+
   if (event.target.matches("[data-action='toggle-paid']")) {
     setPersonPaid(event.target.dataset.sessionId, event.target.dataset.personId, event.target.checked);
   }
 
   if (event.target.matches("[data-import-file]")) {
     importJson(event.target.files?.[0]);
+    event.target.value = "";
+  }
+
+  if (event.target.matches("[data-attach-receipt-file]")) {
+    attachReceiptFile(event.target.dataset.sessionId, event.target.files?.[0]);
     event.target.value = "";
   }
 });
@@ -1250,3 +1466,12 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
     });
   });
 }
+
+initImageStore()
+  .then(() => {
+    imageStoreAvailable = true;
+    if (routeParts()[0] === "settings" || routeParts()[0] === "session") render();
+  })
+  .catch(() => {
+    imageStoreAvailable = false;
+  });

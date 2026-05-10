@@ -1,4 +1,4 @@
-const CACHE_NAME = "bagi-bill-v6";
+const CACHE_NAME = "bagi-bill-v7";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -7,6 +7,7 @@ const APP_SHELL = [
   "./js/app.js",
   "./js/calculator.js",
   "./js/format.js",
+  "./js/imageStore.js",
   "./js/ocr.js",
   "./js/share.js",
   "./js/storage.js",
