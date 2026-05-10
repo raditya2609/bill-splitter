@@ -1,4 +1,4 @@
-const { calculateSplit } = window.BillCalculator;
+const { calculateSplit, summarizeAll } = window.BillCalculator;
 const { formatDate, formatIDR, formatNumber, normalizePhone, parseIDR, todayISO } = window.BillFormat;
 const { deleteSession, getSession, loadState, saveSettings, saveState, upsertSession } = window.BillStorage;
 const { buildPersonWhatsappUrl, shareSessionResult } = window.BillShare;
@@ -7,6 +7,7 @@ const app = document.querySelector("#app");
 let draft = null;
 let expandedPeople = new Set();
 let deferredInstallPrompt = null;
+let homeFilter = "all";
 
 function makeId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -74,22 +75,37 @@ function renderShell(content, options = {}) {
 function renderHome() {
   const state = loadState();
   const sessions = [...state.sessions].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+  const summary = summarizeAll(sessions, state.settings);
+  const visibleSessions = homeFilter === "unpaid" ? sessions.filter((session) => !isSessionLunas(session)) : sessions;
 
   renderShell(`
     <section class="hero-band">
       <p class="eyebrow">Split patungan tanpa login</p>
       <h1>Hitung bagian temanmu dengan rapi.</h1>
     </section>
+    ${sessions.length ? renderHomeStats(summary) : ""}
+    ${
+      sessions.length
+        ? `
+          <div class="filter-chips" role="group" aria-label="Filter sesi">
+            <button type="button" class="chip toggle ${homeFilter === "all" ? "is-active" : ""}" data-action="set-home-filter" data-filter="all">Semua</button>
+            <button type="button" class="chip toggle ${homeFilter === "unpaid" ? "is-active" : ""}" data-action="set-home-filter" data-filter="unpaid">Belum Lunas</button>
+          </div>
+        `
+        : ""
+    }
     <section class="stack">
       ${
         sessions.length
-          ? sessions
+          ? visibleSessions.length
+            ? visibleSessions
               .map((session) => {
                 const calc = calculateSplit(session, state.settings);
+                const lunas = isSessionLunas(session);
                 return `
-                  <a class="session-card" href="#session/${session.id}">
+                  <a class="session-card ${lunas ? "is-lunas" : ""}" href="#session/${session.id}">
                     <span>
-                      <strong>${escapeHtml(session.title)}</strong>
+                      <strong class="session-title-line">${escapeHtml(session.title)}${lunas ? `<span class="lunas-badge">Lunas</span>` : ""}</strong>
                       <small>${formatDate(session.date)} · ${session.people.length} orang</small>
                     </span>
                     <b>${formatIDR(calc.grandTotalRounded)}</b>
@@ -97,6 +113,11 @@ function renderHome() {
                 `;
               })
               .join("")
+            : `
+              <div class="empty-state compact-empty">
+                <h2>Semua sesi sudah lunas! 🎉</h2>
+              </div>
+            `
           : `
             <div class="empty-state">
               <div class="empty-icon">+</div>
@@ -110,6 +131,21 @@ function renderHome() {
       <a class="primary-btn" href="#new">+ Split Baru</a>
     </nav>
   `);
+}
+
+function isSessionLunas(session) {
+  const people = Array.isArray(session.people) ? session.people : [];
+  return people.length > 0 && people.every((person) => person.paidAt);
+}
+
+function renderHomeStats(summary) {
+  const primary = summary.unpaidAmount === 0 ? "Semua lunas 🎉" : `Belum dibayar: ${formatIDR(summary.unpaidAmount)} · ${summary.unpaidPeopleCount} orang`;
+  return `
+    <section class="stats-band">
+      <strong>${primary}</strong>
+      <small>Total semua: ${formatIDR(summary.totalAmount)} · Lunas ${summary.lunasCount} dari ${summary.sessionsCount} sesi</small>
+    </section>
+  `;
 }
 
 function createBlankDraft(settings) {
@@ -702,6 +738,11 @@ app.addEventListener("click", async (event) => {
 
   if (action === "back") {
     history.length > 1 ? history.back() : navigate("#home");
+  }
+
+  if (action === "set-home-filter") {
+    homeFilter = target.dataset.filter === "unpaid" ? "unpaid" : "all";
+    renderHome();
   }
 
   if (action === "add-person") {

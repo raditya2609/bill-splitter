@@ -77,7 +77,36 @@
     };
   }
 
+  function summarizeAll(sessions, settings = {}) {
+    const summary = {
+      totalAmount: 0,
+      paidAmount: 0,
+      unpaidAmount: 0,
+      unpaidPeopleCount: 0,
+      sessionsCount: Array.isArray(sessions) ? sessions.length : 0,
+      lunasCount: 0,
+    };
+
+    if (!Array.isArray(sessions)) return summary;
+
+    sessions.forEach((session) => {
+      const people = Array.isArray(session.people) ? session.people : [];
+      const paidIds = new Set(people.filter((person) => person.paidAt).map((person) => person.id));
+      const calculation = calculateSplit(session, settings);
+      const isLunas = people.length > 0 && people.every((person) => person.paidAt);
+
+      summary.totalAmount += calculation.grandTotalRounded;
+      summary.paidAmount += calculation.perPerson.reduce((sum, person) => (paidIds.has(person.personId) ? sum + person.totalRounded : sum), 0);
+      summary.unpaidPeopleCount += people.filter((person) => !person.paidAt).length;
+      if (isLunas) summary.lunasCount += 1;
+    });
+
+    summary.unpaidAmount = summary.totalAmount - summary.paidAmount;
+    return summary;
+  }
+
   window.BillCalculator = {
     calculateSplit,
+    summarizeAll,
   };
 })();

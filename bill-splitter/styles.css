@@ -146,11 +146,38 @@ a {
   padding: 16px;
 }
 
+.session-card.is-lunas {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+}
+
+.session-title-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.lunas-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-strong);
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
 .session-card strong,
 .session-card small,
 .person-main strong,
 .person-main small {
   display: block;
+}
+
+.session-card .session-title-line {
+  display: inline-flex;
 }
 
 .session-card b,
@@ -163,6 +190,30 @@ small,
 .hint,
 .field-label {
   color: var(--muted);
+}
+
+.stats-band {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+.stats-band strong {
+  font-size: 1rem;
+}
+
+.stats-band small {
+  color: var(--muted);
+}
+
+.filter-chips {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 12px;
 }
 
 .bottom-bar,
@@ -520,6 +571,16 @@ textarea {
 .empty-state p {
   margin: 0;
   color: var(--muted);
+}
+
+.compact-empty {
+  min-height: 132px;
+  box-shadow: none;
+}
+
+.compact-empty h2 {
+  margin: 0;
+  font-size: 1.15rem;
 }
 
 .empty-icon {
