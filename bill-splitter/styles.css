@@ -619,6 +619,15 @@ textarea {
   font-weight: 750;
 }
 
+.info-box {
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--text);
+  font-weight: 750;
+}
+
 .sheet-backdrop {
   position: fixed;
   inset: 0;

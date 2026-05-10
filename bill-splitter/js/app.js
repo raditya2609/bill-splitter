@@ -98,7 +98,7 @@ function renderHome() {
 
   renderShell(`
     <section class="hero-band">
-      <p class="eyebrow">Split patungan tanpa login</p>
+      <p class="eyebrow">Split patungan tanpa ribet</p>
       <h1>Hitung bagian temanmu dengan rapi.</h1>
     </section>
     ${sessions.length ? renderHomeStats(summary) : ""}
@@ -412,6 +412,9 @@ function renderOcrProcessing() {
 }
 
 function renderOcrReview() {
+  const itemCandidates = getOcrItemCandidates();
+  const detectionSummary = getOcrDetectionSummary();
+
   return `
     <div class="ocr-step">
       <details class="ocr-raw">
@@ -419,15 +422,16 @@ function renderOcrReview() {
         <textarea readonly rows="7">${escapeHtml(ocrState.rawText)}</textarea>
       </details>
       ${ocrState.warning ? `<div class="warning-box">${escapeHtml(ocrState.warning)}</div>` : ""}
+      ${detectionSummary ? `<div class="info-box">${escapeHtml(detectionSummary)}</div>` : ""}
       <div class="ocr-candidate-list">
         ${
-          ocrState.candidates.length
-            ? ocrState.candidates.map((candidate) => renderOcrCandidate(candidate)).join("")
+          itemCandidates.length
+            ? itemCandidates.map((candidate) => renderOcrCandidate(candidate)).join("")
             : `<p class="hint">Tidak ada item terdeteksi. Coba foto ulang atau input manual.</p>`
         }
       </div>
       <div class="action-row">
-        <button type="button" class="primary-btn" data-action="ocr-apply" ${ocrState.candidates.length ? "" : "disabled"}>Tambahkan ke split</button>
+        <button type="button" class="primary-btn" data-action="ocr-apply" ${itemCandidates.length ? "" : "disabled"}>Tambahkan ke split</button>
         <button type="button" class="secondary-btn" data-action="ocr-cancel">Batal</button>
       </div>
     </div>
@@ -437,16 +441,6 @@ function renderOcrReview() {
 function renderOcrCandidate(candidate) {
   return `
     <article class="ocr-row" data-ocr-row-id="${candidate.id}">
-      <select class="ocr-type-chip" data-field="ocr-type" aria-label="Jenis baris OCR">
-        ${[
-          ["item", "Item"],
-          ["tax", "Pajak"],
-          ["service", "Service"],
-          ["ignore", "Abaikan"],
-        ]
-          .map(([value, label]) => `<option value="${value}" ${candidate.type === value ? "selected" : ""}>${label}</option>`)
-          .join("")}
-      </select>
       <label>
         <span>Nama</span>
         <input data-field="ocr-name" type="text" value="${escapeHtml(candidate.name)}">
@@ -458,6 +452,22 @@ function renderOcrCandidate(candidate) {
       <button type="button" class="icon-btn danger" data-action="ocr-delete-row" data-ocr-id="${candidate.id}" aria-label="Hapus kandidat">🗑</button>
     </article>
   `;
+}
+
+function getOcrItemCandidates() {
+  return ocrState.candidates.filter((candidate) => candidate.type === "item");
+}
+
+function getOcrDetectionSummary() {
+  const detected = [];
+  const tax = ocrState.candidates.find((candidate) => candidate.type === "tax" && candidate.percent !== null);
+  const service = ocrState.candidates.find((candidate) => candidate.type === "service" && candidate.percent !== null);
+
+  if (tax) detected.push(`Pajak ${tax.percent}%`);
+  if (service) detected.push(`Service ${service.percent}%`);
+  if (!detected.length) return "";
+
+  return `ℹ️ ${detected.join(" dan ")} terdeteksi dan akan otomatis terisi.`;
 }
 
 function renderErrors(errors) {
@@ -964,7 +974,7 @@ async function processOcrImage() {
       rawText,
       candidates: parsed.candidates,
       warning: parsed.warning,
-      error: parsed.candidates.length ? "" : "Tidak ada item terdeteksi. Coba foto ulang atau input manual.",
+      error: parsed.candidates.some((candidate) => candidate.type === "item") ? "" : "Tidak ada item terdeteksi. Coba foto ulang atau input manual.",
     };
     renderCurrentForm();
   } catch (error) {
@@ -979,7 +989,6 @@ function syncOcrCandidatesFromSheet() {
   app.querySelectorAll("[data-ocr-row-id]").forEach((row) => {
     const candidate = ocrState.candidates.find((entry) => entry.id === row.dataset.ocrRowId);
     if (!candidate) return;
-    candidate.type = row.querySelector("[data-field='ocr-type']").value;
     candidate.name = row.querySelector("[data-field='ocr-name']").value.trim();
     candidate.price = parseIDR(row.querySelector("[data-field='ocr-price']").value);
   });
