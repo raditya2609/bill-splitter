@@ -1,4 +1,4 @@
-const CACHE_NAME = "bagi-bill-v4";
+const CACHE_NAME = "bagi-bill-v5";
 const APP_SHELL = [
   "./",
   "./index.html",

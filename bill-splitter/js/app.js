@@ -2,12 +2,30 @@ const { calculateSplit, summarizeAll } = window.BillCalculator;
 const { formatDate, formatIDR, formatNumber, normalizePhone, parseIDR, todayISO } = window.BillFormat;
 const { deleteSession, getSession, loadState, saveSettings, saveState, upsertSession } = window.BillStorage;
 const { buildPersonWhatsappUrl, shareSessionResult } = window.BillShare;
+const { parseReceiptText, recognizeImage } = window.BillOcr;
 
 const app = document.querySelector("#app");
 let draft = null;
 let expandedPeople = new Set();
 let deferredInstallPrompt = null;
 let homeFilter = "all";
+let ocrState = createOcrState();
+let ocrRunId = 0;
+
+function createOcrState() {
+  return {
+    isOpen: false,
+    step: "capture",
+    file: null,
+    imageUrl: "",
+    rawText: "",
+    candidates: [],
+    warning: "",
+    error: "",
+    progress: 0,
+    progressLabel: "",
+  };
+}
 
 function makeId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -221,7 +239,7 @@ function renderSessionForm(sessionId = null, errors = []) {
         <section class="section-block">
           <div class="section-title-row">
             <h2>Item</h2>
-            <button type="button" class="ghost-btn" data-action="scan-placeholder">📷 Scan struk</button>
+            <button type="button" class="ghost-btn" data-action="scan-receipt">📷 Scan struk</button>
           </div>
           <div class="item-list">
             ${
@@ -257,6 +275,7 @@ function renderSessionForm(sessionId = null, errors = []) {
         </div>
       </form>
       <p class="toast" data-toast hidden></p>
+      ${renderOcrSheet()}
     `,
     { back: true },
   );
@@ -317,6 +336,126 @@ function renderItemRow(item, people) {
           }
         </div>
       </div>
+    </article>
+  `;
+}
+
+function renderOcrSheet() {
+  if (!ocrState.isOpen) return "";
+
+  return `
+    <section class="sheet-backdrop" role="dialog" aria-modal="true" aria-labelledby="ocr-title">
+      <div class="ocr-sheet">
+        <header class="ocr-head">
+          <span>
+            <p class="eyebrow">OCR struk</p>
+            <h2 id="ocr-title">Scan struk</h2>
+          </span>
+          <button type="button" class="icon-btn" data-action="ocr-cancel" aria-label="Tutup">×</button>
+        </header>
+        ${renderOcrError()}
+        ${renderOcrContent()}
+      </div>
+    </section>
+  `;
+}
+
+function renderOcrError() {
+  return ocrState.error ? `<div class="error-box" role="alert"><p>${escapeHtml(ocrState.error)}</p></div>` : "";
+}
+
+function renderOcrContent() {
+  if (ocrState.step === "preview") return renderOcrPreview();
+  if (ocrState.step === "processing") return renderOcrProcessing();
+  if (ocrState.step === "review") return renderOcrReview();
+  return renderOcrCapture();
+}
+
+function renderOcrCapture() {
+  return `
+    <div class="ocr-step">
+      <p class="hint">Ambil foto struk yang terang dan tidak miring. Data belum akan masuk ke split sampai kamu review.</p>
+      <input class="file-input" type="file" accept="image/*" capture="environment" data-ocr-file>
+      <div class="action-row">
+        <button type="button" class="primary-btn" data-action="ocr-pick-file">Pilih / Foto struk</button>
+        <button type="button" class="secondary-btn" data-action="ocr-cancel">Batal</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderOcrPreview() {
+  return `
+    <div class="ocr-step">
+      <div class="receipt-preview">
+        <img src="${escapeHtml(ocrState.imageUrl)}" alt="Preview struk">
+      </div>
+      <div class="action-row">
+        <button type="button" class="primary-btn" data-action="ocr-process">Proses</button>
+        <button type="button" class="secondary-btn" data-action="ocr-retake">Foto ulang</button>
+        <button type="button" class="secondary-btn" data-action="ocr-cancel">Batal</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderOcrProcessing() {
+  return `
+    <div class="ocr-step">
+      <p class="hint" data-ocr-progress-label>${escapeHtml(ocrState.progressLabel || "Memproses gambar...")}</p>
+      <div class="progress-track" aria-label="Progress OCR" data-ocr-progress-track>
+        <span data-ocr-progress-bar style="width: ${Math.max(4, Math.round(ocrState.progress * 100))}%"></span>
+      </div>
+      <button type="button" class="secondary-btn wide" data-action="ocr-cancel">Batal</button>
+    </div>
+  `;
+}
+
+function renderOcrReview() {
+  return `
+    <div class="ocr-step">
+      <details class="ocr-raw">
+        <summary>Lihat teks asli OCR</summary>
+        <textarea readonly rows="7">${escapeHtml(ocrState.rawText)}</textarea>
+      </details>
+      ${ocrState.warning ? `<div class="warning-box">${escapeHtml(ocrState.warning)}</div>` : ""}
+      <div class="ocr-candidate-list">
+        ${
+          ocrState.candidates.length
+            ? ocrState.candidates.map((candidate) => renderOcrCandidate(candidate)).join("")
+            : `<p class="hint">Tidak ada item terdeteksi. Coba foto ulang atau input manual.</p>`
+        }
+      </div>
+      <div class="action-row">
+        <button type="button" class="primary-btn" data-action="ocr-apply" ${ocrState.candidates.length ? "" : "disabled"}>Tambahkan ke split</button>
+        <button type="button" class="secondary-btn" data-action="ocr-cancel">Batal</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderOcrCandidate(candidate) {
+  return `
+    <article class="ocr-row" data-ocr-row-id="${candidate.id}">
+      <select class="ocr-type-chip" data-field="ocr-type" aria-label="Jenis baris OCR">
+        ${[
+          ["item", "Item"],
+          ["tax", "Pajak"],
+          ["service", "Service"],
+          ["ignore", "Abaikan"],
+        ]
+          .map(([value, label]) => `<option value="${value}" ${candidate.type === value ? "selected" : ""}>${label}</option>`)
+          .join("")}
+      </select>
+      <label>
+        <span>Nama</span>
+        <input data-field="ocr-name" type="text" value="${escapeHtml(candidate.name)}">
+      </label>
+      <label>
+        <span>Harga</span>
+        <input data-field="ocr-price" type="text" inputmode="numeric" value="${candidate.price ? `Rp ${formatNumber(candidate.price)}` : ""}" placeholder="Rp 0">
+      </label>
+      <button type="button" class="icon-btn danger" data-action="ocr-delete-row" data-ocr-id="${candidate.id}" aria-label="Hapus kandidat">🗑</button>
     </article>
   `;
 }
@@ -730,6 +869,155 @@ async function pickContact(personId) {
   }
 }
 
+function renderCurrentForm() {
+  renderSessionForm(getSession(draft?.id) ? draft.id : null);
+}
+
+function openOcrSheet() {
+  syncDraftFromForm();
+  ocrRunId += 1;
+  ocrState = { ...createOcrState(), isOpen: true };
+  renderCurrentForm();
+  setTimeout(() => app.querySelector("[data-ocr-file]")?.click(), 0);
+}
+
+function closeOcrSheet() {
+  ocrRunId += 1;
+  if (ocrState.imageUrl) URL.revokeObjectURL(ocrState.imageUrl);
+  ocrState = createOcrState();
+  renderCurrentForm();
+}
+
+function retakeOcrPhoto() {
+  ocrRunId += 1;
+  if (ocrState.imageUrl) URL.revokeObjectURL(ocrState.imageUrl);
+  ocrState = { ...createOcrState(), isOpen: true };
+  renderCurrentForm();
+  setTimeout(() => app.querySelector("[data-ocr-file]")?.click(), 0);
+}
+
+function pickOcrFile() {
+  app.querySelector("[data-ocr-file]")?.click();
+}
+
+function validateOcrFile(file) {
+  if (!file) return "Tidak ada gambar yang dipilih.";
+  if (!file.type || !file.type.startsWith("image/")) return "File harus berupa gambar struk.";
+  if (file.size < 1500) return "Gambar terlalu kecil. Coba foto ulang dengan resolusi lebih jelas.";
+  if (file.size > 15 * 1024 * 1024) return "Gambar terlalu besar. Coba pakai foto yang lebih ringan.";
+  return "";
+}
+
+function handleOcrFile(file) {
+  const error = validateOcrFile(file);
+  if (ocrState.imageUrl) URL.revokeObjectURL(ocrState.imageUrl);
+
+  if (error) {
+    ocrState = { ...createOcrState(), isOpen: true, error };
+    renderCurrentForm();
+    return;
+  }
+
+  ocrState = {
+    ...createOcrState(),
+    isOpen: true,
+    step: "preview",
+    file,
+    imageUrl: URL.createObjectURL(file),
+  };
+  renderCurrentForm();
+}
+
+function updateOcrProgress(event) {
+  ocrState.progress = Math.max(0, Math.min(1, Number(event.progress) || 0));
+  ocrState.progressLabel = event.label || "Memproses gambar...";
+  const label = app.querySelector("[data-ocr-progress-label]");
+  const bar = app.querySelector("[data-ocr-progress-bar]");
+  if (label) label.textContent = ocrState.progressLabel;
+  if (bar) bar.style.width = `${Math.max(4, Math.round(ocrState.progress * 100))}%`;
+}
+
+async function processOcrImage() {
+  if (!ocrState.file) {
+    ocrState.error = "Tidak ada gambar yang dipilih.";
+    renderCurrentForm();
+    return;
+  }
+
+  const file = ocrState.file;
+  const runId = ++ocrRunId;
+  ocrState.step = "processing";
+  ocrState.error = "";
+  ocrState.progress = 0;
+  ocrState.progressLabel = "Mengunduh model OCR (pertama kali aja)...";
+  renderCurrentForm();
+
+  try {
+    const rawText = await recognizeImage(file, updateOcrProgress);
+    if (runId !== ocrRunId) return;
+    const parsed = parseReceiptText(rawText);
+    if (ocrState.imageUrl) URL.revokeObjectURL(ocrState.imageUrl);
+    ocrState = {
+      ...createOcrState(),
+      isOpen: true,
+      step: "review",
+      rawText,
+      candidates: parsed.candidates,
+      warning: parsed.warning,
+      error: parsed.candidates.length ? "" : "Tidak ada item terdeteksi. Coba foto ulang atau input manual.",
+    };
+    renderCurrentForm();
+  } catch (error) {
+    if (runId !== ocrRunId) return;
+    ocrState.step = "preview";
+    ocrState.error = "Gagal memuat OCR. Coba lagi atau input manual.";
+    renderCurrentForm();
+  }
+}
+
+function syncOcrCandidatesFromSheet() {
+  app.querySelectorAll("[data-ocr-row-id]").forEach((row) => {
+    const candidate = ocrState.candidates.find((entry) => entry.id === row.dataset.ocrRowId);
+    if (!candidate) return;
+    candidate.type = row.querySelector("[data-field='ocr-type']").value;
+    candidate.name = row.querySelector("[data-field='ocr-name']").value.trim();
+    candidate.price = parseIDR(row.querySelector("[data-field='ocr-price']").value);
+  });
+}
+
+function deleteOcrRow(candidateId) {
+  syncOcrCandidatesFromSheet();
+  ocrState.candidates = ocrState.candidates.filter((candidate) => candidate.id !== candidateId);
+  renderCurrentForm();
+}
+
+function applyOcrRows() {
+  if (!draft) return;
+  syncOcrCandidatesFromSheet();
+
+  ocrState.candidates.forEach((candidate) => {
+    if (candidate.type === "item") {
+      draft.items.push({
+        id: makeId("i"),
+        name: candidate.name || "Item struk",
+        price: Number(candidate.price) || 0,
+        sharedBy: [],
+      });
+    }
+
+    if (candidate.type === "tax" && candidate.percent !== null) {
+      draft.taxPct = candidate.percent;
+    }
+
+    if (candidate.type === "service" && candidate.percent !== null) {
+      draft.servicePct = candidate.percent;
+    }
+  });
+
+  ocrState = createOcrState();
+  renderCurrentForm();
+}
+
 app.addEventListener("click", async (event) => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
@@ -775,8 +1063,32 @@ app.addEventListener("click", async (event) => {
     toggleShare(target.dataset.itemId, target.dataset.personId);
   }
 
-  if (action === "scan-placeholder") {
-    showToast("Scan struk akan tersedia di fase berikutnya.");
+  if (action === "scan-receipt") {
+    openOcrSheet();
+  }
+
+  if (action === "ocr-pick-file") {
+    pickOcrFile();
+  }
+
+  if (action === "ocr-retake") {
+    retakeOcrPhoto();
+  }
+
+  if (action === "ocr-cancel") {
+    closeOcrSheet();
+  }
+
+  if (action === "ocr-process") {
+    await processOcrImage();
+  }
+
+  if (action === "ocr-delete-row") {
+    deleteOcrRow(target.dataset.ocrId);
+  }
+
+  if (action === "ocr-apply") {
+    applyOcrRows();
   }
 
   if (action === "toggle-person") {
@@ -844,10 +1156,21 @@ app.addEventListener("focusout", (event) => {
     event.target.value = value ? `Rp ${formatNumber(value)}` : "";
     updateLiveTotal();
   }
+
+  if (event.target.matches("[data-field='ocr-price']")) {
+    const value = parseIDR(event.target.value);
+    event.target.value = value ? `Rp ${formatNumber(value)}` : "";
+  }
 });
 
 app.addEventListener("focusin", (event) => {
   if (event.target.matches("[data-field='item-price']")) {
+    const value = parseIDR(event.target.value);
+    event.target.value = value || "";
+    event.target.select();
+  }
+
+  if (event.target.matches("[data-field='ocr-price']")) {
     const value = parseIDR(event.target.value);
     event.target.value = value || "";
     event.target.select();
@@ -861,6 +1184,11 @@ app.addEventListener("input", (event) => {
 });
 
 app.addEventListener("change", (event) => {
+  if (event.target.matches("[data-ocr-file]")) {
+    handleOcrFile(event.target.files?.[0]);
+    event.target.value = "";
+  }
+
   if (event.target.matches("[data-action='toggle-paid']")) {
     setPersonPaid(event.target.dataset.sessionId, event.target.dataset.personId, event.target.checked);
   }
